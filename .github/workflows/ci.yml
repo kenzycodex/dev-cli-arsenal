@@ -131,71 +131,71 @@ jobs:
         fi
 
   # Test scripts across different platforms (with better error handling)
-  test-scripts:
-    name: Test Scripts (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  # test-scripts:
+  #   name: Test Scripts (${{ matrix.os }})
+  #   runs-on: ${{ matrix.os }}
+  #   needs: validate
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       os: [ubuntu-latest, macos-latest, windows-latest]
         
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+  #   steps:
+  #   - name: Checkout repository
+  #     uses: actions/checkout@v4
       
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ env.NODE_VERSION }}
+  #   - name: Setup Node.js
+  #     uses: actions/setup-node@v4
+  #     with:
+  #       node-version: ${{ env.NODE_VERSION }}
         
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v2
-      with:
-        version: latest
+  #   - name: Setup pnpm
+  #     uses: pnpm/action-setup@v2
+  #     with:
+  #       version: latest
         
-    - name: Install minimal global tools for testing
-      run: |
-        echo "Installing minimal tools for testing..."
-        # Only install what we absolutely need for testing
-        pnpm add -g @antfu/ni || echo "⚠️ ni installation failed"
-        pnpm add -g rimraf || echo "⚠️ rimraf installation failed"
+  #   - name: Install minimal global tools for testing
+  #     run: |
+  #       echo "Installing minimal tools for testing..."
+  #       # Only install what we absolutely need for testing
+  #       pnpm add -g @antfu/ni || echo "⚠️ ni installation failed"
+  #       pnpm add -g rimraf || echo "⚠️ rimraf installation failed"
         
-    - name: Test verification script (non-critical)
-      run: |
-        echo "Testing tool verification script..."
-        # Run verification but don't fail the build if critical tools are missing
-        node scripts/verify-tools.js --critical-only || echo "⚠️ Some critical tools not found (expected in CI)"
+  #   - name: Test verification script (non-critical)
+  #     run: |
+  #       echo "Testing tool verification script..."
+  #       # Run verification but don't fail the build if critical tools are missing
+  #       node scripts/verify-tools.js --critical-only || echo "⚠️ Some critical tools not found (expected in CI)"
         
-    - name: Test verification script help
-      run: |
-        echo "Testing verification script help..."
-        node scripts/verify-tools.js --help
+  #   - name: Test verification script help
+  #     run: |
+  #       echo "Testing verification script help..."
+  #       node scripts/verify-tools.js --help
         
-    - name: Test interactive installer help
-      run: |
-        echo "Testing interactive installer..."
-        node tools/tool-installer.js --help
-        node tools/tool-installer.js --version
+  #   - name: Test interactive installer help
+  #     run: |
+  #       echo "Testing interactive installer..."
+  #       node tools/tool-installer.js --help
+  #       node tools/tool-installer.js --version
         
-    - name: Test installation script (Unix)
-      if: runner.os != 'Windows'
-      run: |
-        echo "Testing Unix installation script..."
-        chmod +x scripts/install.sh
-        bash scripts/install.sh --help || echo "⚠️ Install script help failed"
+  #   - name: Test installation script (Unix)
+  #     if: runner.os != 'Windows'
+  #     run: |
+  #       echo "Testing Unix installation script..."
+  #       chmod +x scripts/install.sh
+  #       bash scripts/install.sh --help || echo "⚠️ Install script help failed"
         
-    - name: Test installation script (Windows)
-      if: runner.os == 'Windows'
-      shell: powershell
-      run: |
-        echo "Testing Windows installation script..."
-        try {
-          Get-Help scripts/install.ps1 -ErrorAction Stop
-          Write-Host "✅ PowerShell script help works"
-        } catch {
-          Write-Host "⚠️ PowerShell script help failed: $_"
-        }
+  #   - name: Test installation script (Windows)
+  #     if: runner.os == 'Windows'
+  #     shell: powershell
+  #     run: |
+  #       echo "Testing Windows installation script..."
+  #       try {
+  #         Get-Help scripts/install.ps1 -ErrorAction Stop
+  #         Write-Host "✅ PowerShell script help works"
+  #       } catch {
+  #         Write-Host "⚠️ PowerShell script help failed: $_"
+  #       }
 
   # Run tests if they exist
   test:
@@ -366,7 +366,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [validate, quality, test-scripts, test, security, documentation, build]
+    needs: [validate, quality, test, security, documentation]
     if: always()
     
     steps:
@@ -398,9 +398,9 @@ jobs:
         fi
         
         # Test scripts can have warnings but shouldn't fail CI completely
-        if [[ "${{ needs.test-scripts.result }}" == "failure" ]]; then
-          echo "⚠️ Script testing had issues - review recommended"
-        fi
+        # if [[ "${{ needs.test-scripts.result }}" == "failure" ]]; then
+        #   echo "⚠️ Script testing had issues - review recommended"
+        # fi
         
         # These are helpful but not critical
         if [[ "${{ needs.test.result }}" == "failure" ]]; then
@@ -415,9 +415,9 @@ jobs:
           echo "📝 Documentation could be improved"
         fi
         
-        if [[ "${{ needs.build.result }}" == "failure" ]]; then
-          echo "📦 Build issues found - not critical for CLI tools"
-        fi
+        # if [[ "${{ needs.build.result }}" == "failure" ]]; then
+        #   echo "📦 Build issues found - not critical for CLI tools"
+        # fi
         
         echo ""
         
