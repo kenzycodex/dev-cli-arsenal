@@ -1,0 +1,400 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run weekly tool verification on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+
+env:
+  NODE_VERSION: '18'
+  NODE_OPTIONS: '--max_old_space_size=4096'
+
+jobs:
+  # Lint and format check
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        npm ci
+        
+    - name: Run ESLint
+      run: npm run lint
+      
+    - name: Check Prettier formatting
+      run: npm run format:check
+      
+    - name: Validate JSON files
+      run: |
+        find . -name "*.json" -not -path "./node_modules/*" | xargs -I {} sh -c 'echo "Validating {}" && cat {} | jq .'
+        
+    - name: Validate Markdown links
+      uses: gaurav-nelson/github-action-markdown-link-check@v1
+      with:
+        use-quiet-mode: 'yes'
+        use-verbose-mode: 'yes'
+        config-file: '.github/markdown-link-check-config.json'
+
+  # Test installation scripts
+  test-scripts:
+    name: Test Installation Scripts
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: ['16', '18', '20']
+        
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        
+    - name: Setup system dependencies (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y curl wget
+        
+    - name: Setup system dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        # Homebrew is pre-installed on GitHub Actions macOS runners
+        brew --version
+        
+    - name: Setup system dependencies (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        # Chocolatey is pre-installed on GitHub Actions Windows runners
+        choco --version
+        
+    - name: Test verification script
+      run: |
+        node scripts/verify-tools.js --critical-only
+        
+    - name: Test installation script (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        chmod +x scripts/install.sh
+        # Test dry run mode
+        bash scripts/install.sh --help
+        
+    - name: Test installation script (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        # Test help mode
+        powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -WhatIf
+        
+    - name: Test interactive installer
+      run: |
+        # Test help and version commands
+        node tools/tool-installer.js --help
+        node tools/tool-installer.js --version
+
+  # Verify tool installations
+  verify-tools:
+    name: Verify Tool Installations
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Cache tool installations
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.npm
+          ~/.cache
+          ~/AppData/npm-cache
+        key: ${{ runner.os }}-tools-${{ hashFiles('scripts/verify-tools.js') }}
+        restore-keys: |
+          ${{ runner.os }}-tools-
+          
+    - name: Install essential tools
+      run: |
+        npm install -g @antfu/ni rimraf serve nodemon trash-cli prettier eslint
+        
+    - name: Run comprehensive tool verification
+      run: |
+        node scripts/verify-tools.js
+        
+    - name: Upload verification report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: tool-verification-report-${{ matrix.os }}
+        path: tool-verification-report.json
+        retention-days: 30
+
+  # Security scanning
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run npm audit
+      run: npm audit --audit-level=high
+      
+    - name: Run CodeQL Analysis
+      uses: github/codeql-action/init@v3
+      with:
+        languages: javascript
+        
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # Documentation checks
+  docs:
+    name: Documentation Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        
+    - name: Check documentation consistency
+      run: |
+        # Check that all tools mentioned in scripts are documented
+        node .github/scripts/check-docs-consistency.js
+        
+    - name: Validate tool count in README
+      run: |
+        # Verify that README tool count matches actual tools
+        node .github/scripts/validate-tool-count.js
+        
+    - name: Check for broken internal links
+      run: |
+        # Check for broken internal references
+        grep -r "\]\(" . --include="*.md" | grep -v node_modules | while read line; do
+          echo "Checking: $line"
+        done
+
+  # Performance benchmarks
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[benchmark]')
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        
+    - name: Install benchmarking tools
+      run: |
+        npm install -g hyperfine
+        
+    - name: Run installation benchmarks
+      run: |
+        # Benchmark installation scripts
+        hyperfine --warmup 1 --runs 3 'node scripts/verify-tools.js --critical-only'
+        
+    - name: Run tool performance benchmarks
+      run: |
+        # Benchmark common tools if installed
+        if command -v prettier &> /dev/null; then
+          hyperfine --warmup 1 'prettier --check scripts/*.js'
+        fi
+        
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: benchmark-*.json
+        retention-days: 90
+
+  # Build and test packages
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    needs: [lint, test-scripts]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run tests
+      run: npm test
+      
+    - name: Generate coverage report
+      run: npm run coverage
+      
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  # Release workflow (only on main branch)
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [lint, test-scripts, verify-tools, security, docs, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Generate changelog
+      run: |
+        npm run changelog
+        
+    - name: Create release
+      uses: cycjimmy/semantic-release-action@v4
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        semantic_version: 18
+        extra_plugins: |
+          @semantic-release/changelog
+          @semantic-release/git
+
+  # Weekly tool updates check
+  tool-updates:
+    name: Check Tool Updates
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        
+    - name: Check for tool updates
+      run: |
+        node .github/scripts/check-tool-updates.js
+        
+    - name: Create update PR if needed
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore: update tool versions and information'
+        title: 'chore: weekly tool updates'
+        body: |
+          Automated weekly check for tool updates.
+          This PR contains automated updates to tool versions and descriptions.
+          
+          ## Changes
+          - Updated tool version information
+          - Refreshed installation commands if needed
+          - Updated tool descriptions and links
+          
+          Please review the changes before merging.
+        branch: automated/tool-updates
+        delete-branch: true
+        labels: |
+          automated
+          tool-updates
+          maintenance
+
+  # Notify on failures
+  notify:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [lint, test-scripts, verify-tools, security, docs, build]
+    if: failure() && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Notify team on failure
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        channel: '#dev-cli-arsenal'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}

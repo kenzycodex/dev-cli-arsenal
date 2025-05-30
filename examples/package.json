@@ -1,0 +1,17 @@
+{
+    "name": "dev-cli-arsenal-examples",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+      "dev": "concurrently \"npm run server\" \"npm run client\"",
+      "lint": "eslint . --fix",
+      "format": "prettier --write .",
+      "test": "vitest",
+      "build": "turbo build",
+      "clean": "rimraf dist node_modules && ni",
+      "deps": "madge --circular src/",
+      "security": "npm audit",
+      "serve": "serve dist",
+      "tunnel": "lt --port 3000"
+    }
+  }
