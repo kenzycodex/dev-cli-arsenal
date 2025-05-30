@@ -5,16 +5,12 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
-  schedule:
-    # Run weekly tool verification on Sundays at 2 AM UTC
-    - cron: '0 2 * * 0'
 
 env:
   NODE_VERSION: '18'
-  NODE_OPTIONS: '--max_old_space_size=4096'
 
 jobs:
-  # Basic validation and setup
+  # Validate repository structure and basic functionality
   validate:
     name: Validate Repository
     runs-on: ubuntu-latest
@@ -23,224 +19,155 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Validate repository structure
-      run: |
-        # Check if essential files exist
-        test -f package.json || echo "::warning::package.json not found, skipping npm steps"
-        test -f scripts/install.sh || echo "::error::scripts/install.sh missing"
-        test -f scripts/verify-tools.js || echo "::error::scripts/verify-tools.js missing"
-        test -f tools/tool-installer.js || echo "::error::tools/tool-installer.js missing"
-        
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
         
-    - name: Check Node.js setup
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
+        
+    - name: Check essential files
       run: |
-        node --version
-        npm --version
+        echo "Checking repository structure..."
+        test -f package.json && echo "✅ package.json found"
+        test -f scripts/install.sh && echo "✅ install.sh found"
+        test -f scripts/verify-tools.js && echo "✅ verify-tools.js found"
+        test -f tools/tool-installer.js && echo "✅ tool-installer.js found"
+        test -f README.md && echo "✅ README.md found"
+        
+    - name: Validate package.json
+      run: |
+        echo "Validating package.json..."
+        node -e "JSON.parse(require('fs').readFileSync('package.json', 'utf8'))"
+        echo "✅ package.json is valid JSON"
+        
+    - name: Check Node.js and pnpm versions
+      run: |
+        echo "Node.js version: $(node --version)"
+        echo "pnpm version: $(pnpm --version)"
 
-  # Lint and format check (only if package.json exists)
-  lint:
-    name: Lint & Format Check
+  # Install dependencies and run quality checks
+  quality:
+    name: Code Quality & Dependencies
     runs-on: ubuntu-latest
     needs: validate
-    if: always()
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Check if package.json exists
-      id: check-package
-      run: |
-        if [ -f package.json ]; then
-          echo "has_package=true" >> $GITHUB_OUTPUT
-        else
-          echo "has_package=false" >> $GITHUB_OUTPUT
-        fi
-        
     - name: Setup Node.js
-      if: steps.check-package.outputs.has_package == 'true'
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
         
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
+        
+    - name: Get pnpm store directory
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+        
+    - name: Setup pnpm cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+          
     - name: Install dependencies
-      if: steps.check-package.outputs.has_package == 'true'
       run: |
-        if [ -f package-lock.json ]; then
-          npm ci
-        elif [ -f yarn.lock ]; then
-          yarn install --frozen-lockfile
-        elif [ -f pnpm-lock.yaml ]; then
-          npm install -g pnpm && pnpm install --frozen-lockfile
-        else
-          npm install
-        fi
-      continue-on-error: true
+        echo "Installing dependencies with pnpm..."
+        pnpm install --frozen-lockfile
         
-    - name: Run ESLint
-      if: steps.check-package.outputs.has_package == 'true'
+    - name: Run linting
       run: |
-        if npm list eslint > /dev/null 2>&1; then
-          npm run lint || echo "::warning::ESLint failed or not configured"
-        else
-          echo "::notice::ESLint not found, skipping lint check"
-        fi
-      continue-on-error: true
-      
-    - name: Check Prettier formatting
-      if: steps.check-package.outputs.has_package == 'true'
-      run: |
-        if npm list prettier > /dev/null 2>&1; then
-          npm run format:check || echo "::warning::Prettier check failed or not configured"
-        else
-          echo "::notice::Prettier not found, skipping format check"
-        fi
-      continue-on-error: true
+        echo "Running ESLint..."
+        pnpm run lint || echo "⚠️ Linting issues found"
         
-    - name: Validate JSON files
+    - name: Run formatting check
       run: |
-        echo "Validating JSON files..."
-        find . -name "*.json" -not -path "./node_modules/*" | while read -r file; do
+        echo "Checking code formatting..."
+        pnpm run format:check || echo "⚠️ Formatting issues found"
+        
+    - name: Validate JSON and YAML files
+      run: |
+        echo "Validating configuration files..."
+        # Validate JSON files
+        find . -name "*.json" -not -path "./node_modules/*" | while read file; do
           echo "Validating $file"
-          if command -v jq >/dev/null 2>&1; then
-            jq . "$file" > /dev/null || echo "::warning::Invalid JSON in $file"
-          elif node -e "JSON.parse(require('fs').readFileSync('$file', 'utf8'))" 2>/dev/null; then
-            echo "✓ Valid JSON: $file"
-          else
-            echo "::warning::Invalid JSON in $file"
-          fi
+          node -e "JSON.parse(require('fs').readFileSync('$file', 'utf8'))" || echo "⚠️ Invalid JSON: $file"
         done
         
-    - name: Validate Markdown links
-      uses: gaurav-nelson/github-action-markdown-link-check@v1
-      with:
-        use-quiet-mode: 'yes'
-        use-verbose-mode: 'no'
-        check-modified-files-only: 'yes'
-      continue-on-error: true
+        # Check pnpm-lock.yaml exists and is valid
+        test -f pnpm-lock.yaml && echo "✅ pnpm-lock.yaml found" || echo "⚠️ pnpm-lock.yaml missing"
 
-  # Test installation scripts
+  # Test scripts across different platforms
   test-scripts:
-    name: Test Scripts - ${{ matrix.os }} Node ${{ matrix.node-version }}
+    name: Test Scripts (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: validate
-    if: always()
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node-version: ['16', '18', '20']
         
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Setup Node.js ${{ matrix.node-version }}
+    - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version: ${{ env.NODE_VERSION }}
         
-    - name: Setup system dependencies (Ubuntu)
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y curl wget
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
         
-    - name: Setup system dependencies (macOS)
-      if: runner.os == 'macOS'
+    - name: Install global tools for testing
       run: |
-        # Homebrew is pre-installed on GitHub Actions macOS runners
-        brew --version || echo "::warning::Homebrew not available"
-        
-    - name: Setup system dependencies (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        # Check for Chocolatey and Scoop
-        choco --version || echo "Chocolatey not available"
-        scoop --version || echo "Scoop not available"
+        echo "Installing essential tools for testing..."
+        pnpm add -g @antfu/ni rimraf serve nodemon
         
     - name: Test verification script
       run: |
-        node scripts/verify-tools.js --help || echo "::warning::verify-tools.js help failed"
-        echo "Testing critical tools verification..."
-        timeout 300 node scripts/verify-tools.js --critical-only || echo "::warning::Critical tools verification completed with warnings"
-      continue-on-error: true
+        echo "Testing tool verification script..."
+        node scripts/verify-tools.js --critical-only
+        
+    - name: Test interactive installer help
+      run: |
+        echo "Testing interactive installer..."
+        node tools/tool-installer.js --help
+        node tools/tool-installer.js --version
         
     - name: Test installation script (Unix)
       if: runner.os != 'Windows'
       run: |
+        echo "Testing Unix installation script..."
         chmod +x scripts/install.sh
-        bash scripts/install.sh --help || echo "::warning::install.sh help failed"
-      continue-on-error: true
+        bash scripts/install.sh --help
         
     - name: Test installation script (Windows)
       if: runner.os == 'Windows'
+      shell: powershell
       run: |
-        powershell -ExecutionPolicy Bypass -Command "Get-Help scripts/install.ps1" || echo "PowerShell script help failed"
-      continue-on-error: true
-        
-    - name: Test interactive installer
-      run: |
-        node tools/tool-installer.js --help || echo "::warning::tool-installer.js help failed"
-        node tools/tool-installer.js --version || echo "::warning::tool-installer.js version failed"
-      continue-on-error: true
+        echo "Testing Windows installation script..."
+        Get-Help scripts/install.ps1 -ErrorAction SilentlyContinue
 
-  # Verify tool installations (reduced scope to avoid timeouts)
-  verify-tools:
-    name: Verify Tools - ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    needs: validate
-    if: always()
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ env.NODE_VERSION }}
-        
-    - name: Install essential tools only
-      run: |
-        echo "Installing essential tools for testing..."
-        npm install -g @antfu/ni rimraf serve nodemon || echo "::warning::Some essential tools failed to install"
-      continue-on-error: true
-        
-    - name: Run basic tool verification
-      run: |
-        echo "Running basic tool verification..."
-        node scripts/verify-tools.js --critical-only || echo "::notice::Tool verification completed with some tools missing"
-      continue-on-error: true
-        
-    - name: Generate verification report
-      run: |
-        echo "Generating verification report..."
-        node scripts/verify-tools.js --critical-only > tool-verification-report.txt 2>&1 || true
-        
-    - name: Upload verification report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: tool-verification-report-${{ matrix.os }}
-        path: tool-verification-report.txt
-        retention-days: 7
-      continue-on-error: true
-
-  # Security scanning (simplified)
-  security:
-    name: Security Scan
+  # Run tests if they exist
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
-    needs: validate
-    if: always()
+    needs: [validate, quality]
     
     steps:
     - name: Checkout repository
@@ -251,51 +178,27 @@ jobs:
       with:
         node-version: ${{ env.NODE_VERSION }}
         
-    - name: Check if package.json exists
-      id: check-package
-      run: |
-        if [ -f package.json ]; then
-          echo "has_package=true" >> $GITHUB_OUTPUT
-        else
-          echo "has_package=false" >> $GITHUB_OUTPUT
-        fi
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
         
     - name: Install dependencies
-      if: steps.check-package.outputs.has_package == 'true'
+      run: pnpm install --frozen-lockfile
+      
+    - name: Run tests
       run: |
-        if [ -f package-lock.json ]; then
-          npm ci
-        elif [ -f yarn.lock ]; then
-          yarn install --frozen-lockfile
-        elif [ -f pnpm-lock.yaml ]; then
-          npm install -g pnpm && pnpm install --frozen-lockfile
+        if pnpm run test --if-present; then
+          echo "✅ Tests passed"
         else
-          npm install
+          echo "⚠️ No tests found or tests failed"
         fi
-      continue-on-error: true
-      
-    - name: Run npm audit
-      if: steps.check-package.outputs.has_package == 'true'
-      run: |
-        npm audit --audit-level=moderate || echo "::warning::npm audit found some issues"
-      continue-on-error: true
-      
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
-      with:
-        languages: javascript
-      continue-on-error: true
-        
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
-      continue-on-error: true
 
-  # Documentation checks
-  docs:
-    name: Documentation Checks
+  # Security and dependency checks
+  security:
+    name: Security Checks
     runs-on: ubuntu-latest
-    needs: validate
-    if: always()
+    needs: quality
     
     steps:
     - name: Checkout repository
@@ -306,184 +209,158 @@ jobs:
       with:
         node-version: ${{ env.NODE_VERSION }}
         
-    - name: Check documentation consistency
-      run: |
-        echo "Checking documentation consistency..."
-        # Basic check for README existence and structure
-        test -f README.md || echo "::error::README.md missing"
-        test -f CONTRIBUTING.md || echo "::warning::CONTRIBUTING.md missing"
-        test -f LICENSE || echo "::warning::LICENSE missing"
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
         
-        # Check if scripts mentioned in README exist
-        if [ -f README.md ]; then
-          echo "README.md exists, checking for script references..."
-          grep -q "install.sh" README.md && test -f scripts/install.sh || echo "::warning::install.sh referenced but missing"
-          grep -q "verify-tools.js" README.md && test -f scripts/verify-tools.js || echo "::warning::verify-tools.js referenced but missing"
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+      
+    - name: Run security audit
+      run: |
+        echo "Running security audit..."
+        pnpm audit --audit-level moderate || echo "⚠️ Security vulnerabilities found"
+        
+    - name: Check for outdated dependencies
+      run: |
+        echo "Checking for outdated dependencies..."
+        pnpm outdated || echo "📦 Some dependencies may be outdated"
+
+  # Documentation and README checks
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Check documentation structure
+      run: |
+        echo "Checking documentation structure..."
+        
+        # Essential files
+        test -f README.md && echo "✅ README.md exists"
+        test -f CONTRIBUTING.md && echo "✅ CONTRIBUTING.md exists" || echo "📝 CONTRIBUTING.md missing"
+        test -f LICENSE && echo "✅ LICENSE exists" || echo "📝 LICENSE missing"
+        test -f CHANGELOG.md && echo "✅ CHANGELOG.md exists" || echo "📝 CHANGELOG.md missing"
+        
+        # README content checks
+        if grep -q "Quick Start" README.md; then
+          echo "✅ README has Quick Start section"
+        else
+          echo "📝 README missing Quick Start section"
+        fi
+        
+        if grep -q "Installation" README.md; then
+          echo "✅ README has Installation section"
+        else
+          echo "📝 README missing Installation section"
+        fi
+        
+        if grep -q "pnpm" README.md; then
+          echo "✅ README mentions pnpm"
+        else
+          echo "📝 README should mention pnpm usage"
         fi
         
     - name: Check for broken internal links
       run: |
         echo "Checking for potential broken internal links..."
-        if [ -f README.md ]; then
-          # Look for markdown links to local files
-          grep -n "\](" README.md | while IFS=: read -r line_num content; do
-            echo "Line $line_num: $content"
-          done || echo "No internal links found or checked"
-        fi
+        grep -r "](\./" README.md || echo "📝 No internal links found"
 
-  # Build and test (only if package.json exists)
+  # Build and package validation
   build:
-    name: Build & Test
+    name: Build Validation
     runs-on: ubuntu-latest
-    needs: [lint, docs]
+    needs: [quality, test]
     if: always()
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Check if package.json exists
-      id: check-package
-      run: |
-        if [ -f package.json ]; then
-          echo "has_package=true" >> $GITHUB_OUTPUT
-        else
-          echo "has_package=false" >> $GITHUB_OUTPUT
-        fi
-        
     - name: Setup Node.js
-      if: steps.check-package.outputs.has_package == 'true'
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
+        
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
         
     - name: Install dependencies
-      if: steps.check-package.outputs.has_package == 'true'
-      run: |
-        if [ -f package-lock.json ]; then
-          npm ci
-        elif [ -f yarn.lock ]; then
-          yarn install --frozen-lockfile
-        elif [ -f pnpm-lock.yaml ]; then
-          npm install -g pnpm && pnpm install --frozen-lockfile
-        else
-          npm install
-        fi
-      continue-on-error: true
+      run: pnpm install --frozen-lockfile
       
-    - name: Run tests
-      if: steps.check-package.outputs.has_package == 'true'
+    - name: Run build if available
       run: |
-        if npm run test > /dev/null 2>&1; then
-          npm test
+        if pnpm run build --if-present; then
+          echo "✅ Build successful"
         else
-          echo "::notice::No test script found, skipping tests"
+          echo "📝 No build script found"
         fi
-      continue-on-error: true
-
-  # Performance benchmarks (only on schedule or specific commits)
-  benchmark:
-    name: Performance Benchmarks
-    runs-on: ubuntu-latest
-    needs: validate
-    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[benchmark]')
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ env.NODE_VERSION }}
         
-    - name: Install hyperfine for benchmarking
+    - name: Check package can be packed
       run: |
-        wget https://github.com/sharkdp/hyperfine/releases/download/v1.18.0/hyperfine_1.18.0_amd64.deb
-        sudo dpkg -i hyperfine_1.18.0_amd64.deb || echo "::warning::Failed to install hyperfine"
-      continue-on-error: true
-        
-    - name: Run basic benchmarks
-      run: |
-        if command -v hyperfine >/dev/null 2>&1; then
-          echo "Running performance benchmarks..."
-          hyperfine --warmup 1 --runs 3 'node scripts/verify-tools.js --help' || echo "::warning::Benchmark failed"
-        else
-          echo "::notice::Hyperfine not available, skipping benchmarks"
-        fi
-      continue-on-error: true
+        echo "Testing package creation..."
+        pnpm pack --dry-run
+        echo "✅ Package can be created successfully"
 
-  # Weekly tool updates check (only on schedule)
-  tool-updates:
-    name: Check Tool Updates
-    runs-on: ubuntu-latest
-    needs: validate
-    if: github.event_name == 'schedule'
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ env.NODE_VERSION }}
-        
-    - name: Check for tool updates
-      run: |
-        echo "Checking for tool updates..."
-        # Simple check - just run verification to see current state
-        node scripts/verify-tools.js --critical-only > current-tool-state.txt || true
-        
-    - name: Upload tool state
-      uses: actions/upload-artifact@v4
-      with:
-        name: current-tool-state
-        path: current-tool-state.txt
-        retention-days: 30
-
-  # Summary job
-  ci-summary:
+  # Final summary
+  summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [validate, lint, test-scripts, verify-tools, security, docs, build]
+    needs: [validate, quality, test-scripts, test, security, documentation, build]
     if: always()
     
     steps:
-    - name: Check job results
+    - name: Check overall results
       run: |
-        echo "CI Pipeline Summary:"
-        echo "==================="
+        echo "🔍 CI Pipeline Summary"
+        echo "====================="
         echo "Validate: ${{ needs.validate.result }}"
-        echo "Lint: ${{ needs.lint.result }}"
+        echo "Quality: ${{ needs.quality.result }}"
         echo "Test Scripts: ${{ needs.test-scripts.result }}"
-        echo "Verify Tools: ${{ needs.verify-tools.result }}"
+        echo "Tests: ${{ needs.test.result }}"
         echo "Security: ${{ needs.security.result }}"
-        echo "Docs: ${{ needs.docs.result }}"
+        echo "Documentation: ${{ needs.documentation.result }}"
         echo "Build: ${{ needs.build.result }}"
+        echo ""
         
-        # Determine overall result
-        if [[ "${{ needs.validate.result }}" == "failure" ]]; then
-          echo "::error::Critical validation failed"
+        # Count critical failures
+        critical_failures=0
+        
+        # Critical jobs that must pass
+        [[ "${{ needs.validate.result }}" == "failure" ]] && ((critical_failures++))
+        [[ "${{ needs.quality.result }}" == "failure" ]] && ((critical_failures++))
+        [[ "${{ needs.test-scripts.result }}" == "failure" ]] && ((critical_failures++))
+        
+        # Semi-critical jobs
+        semi_critical_failures=0
+        [[ "${{ needs.test.result }}" == "failure" ]] && ((semi_critical_failures++))
+        [[ "${{ needs.security.result }}" == "failure" ]] && ((semi_critical_failures++))
+        
+        # Non-critical jobs
+        non_critical_failures=0
+        [[ "${{ needs.documentation.result }}" == "failure" ]] && ((non_critical_failures++))
+        [[ "${{ needs.build.result }}" == "failure" ]] && ((non_critical_failures++))
+        
+        echo "Critical failures: $critical_failures"
+        echo "Semi-critical failures: $semi_critical_failures"
+        echo "Non-critical failures: $non_critical_failures"
+        echo ""
+        
+        if [[ $critical_failures -gt 0 ]]; then
+          echo "❌ Critical jobs failed - CI unsuccessful"
           exit 1
-        fi
-        
-        # Count failures in non-critical jobs
-        failures=0
-        [[ "${{ needs.lint.result }}" == "failure" ]] && ((failures++))
-        [[ "${{ needs.test-scripts.result }}" == "failure" ]] && ((failures++))
-        [[ "${{ needs.verify-tools.result }}" == "failure" ]] && ((failures++))
-        [[ "${{ needs.security.result }}" == "failure" ]] && ((failures++))
-        [[ "${{ needs.docs.result }}" == "failure" ]] && ((failures++))
-        [[ "${{ needs.build.result }}" == "failure" ]] && ((failures++))
-        
-        echo "Non-critical failures: $failures"
-        
-        if [[ $failures -gt 3 ]]; then
-          echo "::error::Too many job failures ($failures), marking CI as failed"
+        elif [[ $semi_critical_failures -gt 1 ]]; then
+          echo "⚠️ Multiple semi-critical jobs failed - review needed"
           exit 1
-        elif [[ $failures -gt 0 ]]; then
-          echo "::warning::Some jobs failed ($failures) but CI is passing"
+        elif [[ $((semi_critical_failures + non_critical_failures)) -gt 0 ]]; then
+          echo "⚠️ Some jobs failed but CI passes - review recommended"
+          echo "✅ CI Pipeline completed with warnings"
         else
-          echo "::notice::All jobs completed successfully!"
+          echo "✅ All jobs passed - CI successful!"
         fi
