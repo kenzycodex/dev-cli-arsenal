@@ -389,9 +389,11 @@ function log(message, color = 'white') {
     const coloredTimestamp = colorize(`[${timestamp}]`, 'dim');
     console.log(`${coloredTimestamp} ${colorize(message, color)}`);
     
-    // Log to file
+    // Log to file with proper error handling
     try {
-        fs.appendFileSync(CONFIG.logFile, `[${new Date().toISOString()}] ${message}\n`);
+        if (CONFIG.logFile) {
+            fs.appendFileSync(CONFIG.logFile, `[${new Date().toISOString()}] ${message}\n`);
+        }
     } catch (error) {
         // Silently continue if logging fails
     }
@@ -421,11 +423,12 @@ function printHeader() {
 }
 
 function printSystemInfo() {
-    const platform = {
+    const platformMap = {
         'win32': 'Windows',
         'darwin': 'macOS',
         'linux': 'Linux'
-    }[process.platform] || process.platform;
+    };
+    const platform = platformMap[process.platform] || process.platform;
     
     log(`Platform: ${platform} (${process.arch})`, 'cyan');
     log(`Node.js: ${process.version}`, 'cyan');
@@ -447,14 +450,14 @@ function displayCategories() {
     const sortedCategories = Object.entries(TOOL_CATEGORIES)
         .sort(([,a], [,b]) => a.priority - b.priority);
     
-    sortedCategories.forEach(([name, category], index) => {
+    sortedCategories.forEach(([name, categoryData], index) => {
         const number = (index + 1).toString().padStart(2);
-        const toolCount = category.tools.filter(tool => 
+        const toolCount = categoryData.tools.filter(tool => 
             tool.platforms.includes(process.platform)
         ).length;
         
-        console.log(`${colorize(number, 'yellow')}. ${category.emoji} ${colorize(name, 'bright')} ${colorize(`(${toolCount} tools)`, 'dim')}`);
-        console.log(`    ${colorize(category.description, 'white')}`);
+        console.log(`${colorize(number, 'yellow')}. ${categoryData.emoji} ${colorize(name, 'bright')} ${colorize(`(${toolCount} tools)`, 'dim')}`);
+        console.log(`    ${colorize(categoryData.description, 'white')}`);
         console.log('');
     });
     
@@ -485,8 +488,11 @@ function promptConfirm(question) {
 async function selectCategory() {
     displayCategories();
     
-    while (true) {
-        const choice = await promptUser('Select a category (number): ');
+    let choice;
+    let isValidChoice = false;
+    
+    while (!isValidChoice) {
+        choice = await promptUser('Select a category (number): ');
         
         if (choice === '0') {
             return 'custom';
@@ -506,14 +512,14 @@ async function selectCategory() {
 }
 
 function displayCategoryTools(categoryName) {
-    const category = TOOL_CATEGORIES[categoryName];
-    const platformTools = category.tools.filter(tool => 
+    const categoryData = TOOL_CATEGORIES[categoryName];
+    const platformTools = categoryData.tools.filter(tool => 
         tool.platforms.includes(process.platform)
     );
     
     console.log('');
-    console.log(colorize(`${category.emoji} ${categoryName} Tools:`, 'bright'));
-    console.log(colorize(category.description, 'dim'));
+    console.log(colorize(`${categoryData.emoji} ${categoryName} Tools:`, 'bright'));
+    console.log(colorize(categoryData.description, 'dim'));
     console.log('');
     
     platformTools.forEach((tool, index) => {
@@ -528,8 +534,8 @@ function displayCategoryTools(categoryName) {
 }
 
 async function selectToolsFromCategory(categoryName) {
-    const category = TOOL_CATEGORIES[categoryName];
-    const platformTools = category.tools.filter(tool => 
+    const categoryData = TOOL_CATEGORIES[categoryName];
+    const platformTools = categoryData.tools.filter(tool => 
         tool.platforms.includes(process.platform)
     );
     
@@ -558,13 +564,13 @@ async function selectToolsFromCategory(categoryName) {
 async function selectAllTools() {
     const allTools = [];
     
-    for (const [categoryName, category] of Object.entries(TOOL_CATEGORIES)) {
-        const platformTools = category.tools.filter(tool => 
+    for (const [categoryName, categoryData] of Object.entries(TOOL_CATEGORIES)) {
+        const platformTools = categoryData.tools.filter(tool => 
             tool.platforms.includes(process.platform)
         );
         
         console.log('');
-        console.log(colorize(`${category.emoji} ${categoryName}:`, 'bright'));
+        console.log(colorize(`${categoryData.emoji} ${categoryName}:`, 'bright'));
         
         platformTools.forEach((tool, index) => {
             const number = allTools.length + index + 1;
@@ -620,8 +626,8 @@ async function selectAllTools() {
 function getEssentialTools() {
     const essentialTools = [];
     
-    for (const category of Object.values(TOOL_CATEGORIES)) {
-        const criticalTools = category.tools.filter(tool => 
+    for (const categoryData of Object.values(TOOL_CATEGORIES)) {
+        const criticalTools = categoryData.tools.filter(tool => 
             tool.critical && tool.platforms.includes(process.platform)
         );
         essentialTools.push(...criticalTools);
@@ -638,8 +644,8 @@ async function confirmInstallation(selectedTools) {
     const categories = {};
     selectedTools.forEach(tool => {
         // Find which category this tool belongs to
-        for (const [catName, category] of Object.entries(TOOL_CATEGORIES)) {
-            if (category.tools.includes(tool)) {
+        for (const [catName, categoryData] of Object.entries(TOOL_CATEGORIES)) {
+            if (categoryData.tools.includes(tool)) {
                 if (!categories[catName]) categories[catName] = [];
                 categories[catName].push(tool);
                 break;
@@ -649,8 +655,8 @@ async function confirmInstallation(selectedTools) {
     
     let totalSize = 0;
     Object.entries(categories).forEach(([categoryName, tools]) => {
-        const category = TOOL_CATEGORIES[categoryName];
-        console.log(colorize(`${category.emoji} ${categoryName}:`, 'cyan'));
+        const categoryData = TOOL_CATEGORIES[categoryName];
+        console.log(colorize(`${categoryData.emoji} ${categoryName}:`, 'cyan'));
         
         tools.forEach(tool => {
             const size = parseFloat(tool.size.replace(/[^\d.]/g, ''));
@@ -692,7 +698,7 @@ async function installTool(tool, index, total) {
     let attempts = 0;
     while (attempts < CONFIG.maxRetries) {
         try {
-            const result = await new Promise((resolve, reject) => {
+            const installResult = await new Promise((resolve, reject) => {
                 const child = spawn('npm', ['install', '-g', tool.name], {
                     stdio: 'pipe',
                     timeout: CONFIG.timeout
@@ -765,8 +771,8 @@ async function installTools(selectedTools) {
     
     for (let i = 0; i < selectedTools.length; i++) {
         const tool = selectedTools[i];
-        const result = await installTool(tool, i, selectedTools.length);
-        results.push({ tool, ...result });
+        const installResult = await installTool(tool, i, selectedTools.length);
+        results.push({ tool, ...installResult });
     }
     
     STATS.endTime = Date.now();
@@ -947,7 +953,9 @@ async function main() {
     try {
         // Initialize log file
         try {
-            fs.writeFileSync(CONFIG.logFile, `Interactive Installer Log - ${new Date().toISOString()}\n`);
+            if (CONFIG.logFile) {
+                fs.writeFileSync(CONFIG.logFile, `Interactive Installer Log - ${new Date().toISOString()}\n`);
+            }
         } catch (error) {
             console.warn('Warning: Could not initialize log file');
         }
@@ -959,7 +967,7 @@ async function main() {
         // Check prerequisites
         const prereqsOk = await checkPrerequisites();
         if (!prereqsOk) {
-            process.exit(1);
+            throw new Error('Prerequisites check failed');
         }
         
         // Main selection flow
@@ -978,14 +986,14 @@ async function main() {
         
         if (selectedTools.length === 0) {
             console.log(colorize('No tools selected. Exiting...', 'yellow'));
-            process.exit(0);
+            throw new Error('No tools selected');
         }
         
         // Confirm installation
         const confirmed = await confirmInstallation(selectedTools);
         if (!confirmed) {
             console.log(colorize('Installation cancelled by user.', 'yellow'));
-            process.exit(0);
+            throw new Error('Installation cancelled');
         }
         
         // Install tools
@@ -1018,8 +1026,10 @@ async function main() {
             // Silently continue if report saving fails
         }
         
-        // Exit with appropriate code
-        process.exit(STATS.failed > 0 ? 1 : 0);
+        // Exit with appropriate code using throw instead of process.exit
+        if (STATS.failed > 0) {
+            throw new Error('Some installations failed');
+        }
         
     } catch (error) {
         console.error('');
@@ -1031,32 +1041,32 @@ async function main() {
             log(`Fatal error: ${error.stack}`, 'red');
         }
         
-        process.exit(1);
+        throw error;
     }
 }
 
 // Handle process signals
 process.on('SIGINT', () => {
     console.log('\n\n' + colorize('Installation interrupted by user', 'yellow'));
-    process.exit(130);
+    process.exitCode = 130;
 });
 
 process.on('SIGTERM', () => {
     console.log('\n\n' + colorize('Installation terminated', 'yellow'));
-    process.exit(143);
+    process.exitCode = 143;
 });
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
     console.error('\n' + colorize('Uncaught exception:', 'red'));
     console.error(error.stack);
-    process.exit(1);
+    process.exitCode = 1;
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
     console.error('\n' + colorize('Unhandled rejection:', 'red'));
     console.error(reason);
-    process.exit(1);
+    process.exitCode = 1;
 });
 
 // Command line help
@@ -1082,19 +1092,22 @@ based on your development needs. It provides:
 
 For more information: https://github.com/kenzycodex/dev-cli-arsenal
     `);
-    process.exit(0);
-}
-
-if (process.argv.includes('--version') || process.argv.includes('-v')) {
+    process.exitCode = 0;
+} else if (process.argv.includes('--version') || process.argv.includes('-v')) {
     console.log(`dev-cli-arsenal interactive installer v${CONFIG.version}`);
-    process.exit(0);
-}
-
-// Run main function if this script is executed directly
-if (require.main === module) {
+    process.exitCode = 0;
+} else if (require.main === module) {
+    // Run main function if this script is executed directly
     main().catch(error => {
-        console.error('Fatal error:', error.message);
-        process.exit(1);
+        if (error.message === 'Prerequisites check failed' ||
+            error.message === 'No tools selected' ||
+            error.message === 'Installation cancelled') {
+            // Normal exit for user cancellation or missing prerequisites
+            process.exitCode = 0;
+        } else {
+            console.error('Fatal error:', error.message);
+            process.exitCode = 1;
+        }
     });
 }
 

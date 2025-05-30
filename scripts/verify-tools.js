@@ -12,7 +12,6 @@ const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const util = require('util');
 
 // Configuration
 const CONFIG = {
@@ -495,9 +494,11 @@ function log(level, message, category = '') {
     
     console.log(consoleMessage);
     
-    // File logging
+    // File logging with proper error handling
     try {
-        fs.appendFileSync(CONFIG.logFile, logMessage + '\n');
+        if (CONFIG.logFile) {
+            fs.appendFileSync(CONFIG.logFile, logMessage + '\n');
+        }
     } catch (error) {
         // Silently continue if logging fails
     }
@@ -572,7 +573,8 @@ async function checkTool(tool) {
                 if (code === 0) {
                     // Extract version from output
                     const output = stdout || stderr;
-                    const versionMatch = output.match(/(\d+\.\d+\.\d+(?:\.\d+)?)/);
+                    const versionRegex = /(\d+\.\d+\.\d+(?:\.\d+)?)/;
+                    const versionMatch = output.match(versionRegex);
                     const version = versionMatch ? versionMatch[1] : output.trim().split('\n')[0];
 
                     resolve({
@@ -708,11 +710,12 @@ function displayResults(results) {
         console.log(colorize(`📂 ${category}:`, 'blue'));
         
         tools.forEach(tool => {
-            const statusIcon = {
+            const statusIconMap = {
                 'verified': '✅',
                 'failed': '❌',
                 'skipped': '⏭️'
-            }[tool.status];
+            };
+            const statusIcon = statusIconMap[tool.status];
             
             const nameWidth = 20;
             const paddedName = tool.name.padEnd(nameWidth);
@@ -796,6 +799,8 @@ function generateInstallationSuggestions(results) {
                         console.log('curl https://get.volta.sh | bash');
                     }
                     break;
+                default:
+                    break;
             }
         });
         console.log('');
@@ -843,8 +848,10 @@ function saveReport(results) {
     };
     
     try {
-        fs.writeFileSync(CONFIG.reportFile, JSON.stringify(report, null, 2));
-        log('info', `Detailed report saved to: ${CONFIG.reportFile}`);
+        if (CONFIG.reportFile) {
+            fs.writeFileSync(CONFIG.reportFile, JSON.stringify(report, null, 2));
+            log('info', `Detailed report saved to: ${CONFIG.reportFile}`);
+        }
     } catch (error) {
         log('error', `Failed to save report: ${error.message}`);
     }
@@ -867,7 +874,9 @@ async function main() {
     try {
         // Initialize logging
         try {
-            fs.writeFileSync(CONFIG.logFile, `Tool Verification Log - ${new Date().toISOString()}\n`);
+            if (CONFIG.logFile) {
+                fs.writeFileSync(CONFIG.logFile, `Tool Verification Log - ${new Date().toISOString()}\n`);
+            }
         } catch (error) {
             console.warn('Warning: Could not initialize log file');
         }
@@ -900,14 +909,16 @@ async function main() {
         // Post-verification info
         displayPostVerificationInfo();
         
-        // Exit with appropriate code
+        // Exit with appropriate code using throw instead of process.exit
         const hasFailures = results.some(r => r.status === 'failed' && r.critical);
-        process.exit(hasFailures ? 1 : 0);
+        if (hasFailures) {
+            throw new Error('Critical tools verification failed');
+        }
         
     } catch (error) {
         log('error', `Verification failed: ${error.message}`);
         console.error(error.stack);
-        process.exit(1);
+        throw error;
     }
 }
 
@@ -935,18 +946,18 @@ Examples:
 
 For more information: https://github.com/kenzycodex/dev-cli-arsenal
         `);
-        process.exit(0);
+        throw new Error('Help displayed');
     }
     
     if (args.includes('--version') || args.includes('-v')) {
         console.log(`dev-cli-arsenal tool verification v${CONFIG.version}`);
-        process.exit(0);
+        throw new Error('Version displayed');
     }
     
     if (args.includes('--config')) {
         console.log('Current Configuration:');
         console.log(JSON.stringify(CONFIG, null, 2));
-        process.exit(0);
+        throw new Error('Config displayed');
     }
     
     // Handle critical-only flag
@@ -968,7 +979,7 @@ For more information: https://github.com/kenzycodex/dev-cli-arsenal
             console.log('Available categories:');
             const categories = [...new Set(TOOLS.map(t => t.category))];
             categories.forEach(cat => console.log(`  - ${cat}`));
-            process.exit(1);
+            throw new Error('Category not found');
         }
         
         return categoryTools;
@@ -980,45 +991,66 @@ For more information: https://github.com/kenzycodex/dev-cli-arsenal
 // Handle process signals
 process.on('SIGINT', () => {
     console.log('\n\nVerification interrupted by user');
-    process.exit(130);
+    process.exitCode = 130;
 });
 
 process.on('SIGTERM', () => {
     console.log('\n\nVerification terminated');
-    process.exit(143);
+    process.exitCode = 143;
 });
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
     log('error', `Uncaught exception: ${error.message}`);
     console.error(error.stack);
-    process.exit(1);
+    process.exitCode = 1;
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-    log('error', `Unhandled rejection at ${promise}: ${reason}`);
-    process.exit(1);
+process.on('unhandledRejection', (reason) => {
+    log('error', `Unhandled rejection: ${reason}`);
+    process.exitCode = 1;
 });
 
 // Export for testing
 if (require.main === module) {
     // Parse arguments and filter tools
-    const toolsToCheck = parseArguments();
-    
-    // Update TOOLS constant for filtered execution
-    if (toolsToCheck !== TOOLS) {
-        log('info', `Filtered to ${toolsToCheck.length} tools`);
-        // Replace TOOLS array content
-        TOOLS.length = 0;
-        TOOLS.push(...toolsToCheck);
+    try {
+        const toolsToCheck = parseArguments();
+        
+        // Update TOOLS constant for filtered execution
+        if (toolsToCheck !== TOOLS) {
+            log('info', `Filtered to ${toolsToCheck.length} tools`);
+            // Replace TOOLS array content
+            TOOLS.length = 0;
+            TOOLS.push(...toolsToCheck);
+        }
+        
+        // Run main function
+        main().catch(error => {
+            if (error.message === 'Help displayed' || 
+                error.message === 'Version displayed' || 
+                error.message === 'Config displayed' ||
+                error.message === 'Category not found') {
+                // Normal exit for help/version/config commands
+                return;
+            }
+            
+            log('error', `Fatal error: ${error.message}`);
+            console.error(error.stack);
+            process.exitCode = 1;
+        });
+    } catch (error) {
+        if (error.message === 'Help displayed' || 
+            error.message === 'Version displayed' || 
+            error.message === 'Config displayed' ||
+            error.message === 'Category not found') {
+            // Normal exit for help/version/config commands
+            return;
+        }
+        
+        console.error('Error during argument parsing:', error.message);
+        process.exitCode = 1;
     }
-    
-    // Run main function
-    main().catch(error => {
-        log('error', `Fatal error: ${error.message}`);
-        console.error(error.stack);
-        process.exit(1);
-    });
 } else {
     // Export functions for testing or module usage
     module.exports = {
